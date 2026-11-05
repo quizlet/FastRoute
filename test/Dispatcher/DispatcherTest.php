@@ -159,6 +159,7 @@ abstract class DispatcherTest extends \PHPUnit_Framework_TestCase {
                 $r->addRoute('GET', '/user/{id}/delete', 'delete');
             }, $this->generateDispatcherOptions());
         } catch (BadRouteException $e) {
+            $this->assertSame('Regex "(\d+)" for parameter "id" contains a capturing group', $e->getMessage());
             return;
         }
 
@@ -173,6 +174,7 @@ abstract class DispatcherTest extends \PHPUnit_Framework_TestCase {
                 $r->addRoute('GET', '/user/{id:\d+(*ACCEPT)}', 'show');
             }, $this->generateDispatcherOptions());
         } catch (BadRouteException $e) {
+            $this->assertSame('Regex "\d+(*ACCEPT)" for parameter "id" contains (*ACCEPT)', $e->getMessage());
             return;
         }
 
