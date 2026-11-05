@@ -104,10 +104,48 @@ abstract class RegexBasedAbstract implements DataGenerator {
                 ));
             }
 
+            $this->validatePlaceholderRegex($varName, $regexPart);
+
             $variables[$varName] = $varName;
             $regex .= '(' . $regexPart . ')';
         }
 
         return [$regex, $variables];
+    }
+
+    /**
+     * The dispatchers identify the matched route and its arguments by the position
+     * and number of capturing groups, so a placeholder regex must contribute nothing
+     * but the single group it is wrapped in.
+     */
+    private function validatePlaceholderRegex($varName, $regexPart) {
+        // (*ACCEPT) ends the match before the groups and marks that identify the route
+        if (false !== strpos($regexPart, '(*ACCEPT')) {
+            throw new BadRouteException(sprintf(
+                'Regex "%s" for parameter "%s" contains (*ACCEPT)', $regexPart, $varName
+            ));
+        }
+
+        // Compiling it alone rejects unbalanced ")" that would close the wrapping group;
+        // compiling it in a group rejects a trailing "\", "\Q" or comment that would swallow it
+        if (!$this->regexCompiles($regexPart) || !$this->regexCompiles('(?:' . $regexPart . ')')) {
+            throw new BadRouteException(sprintf(
+                'Regex "%s" for parameter "%s" is not a self-contained regular expression',
+                $regexPart, $varName
+            ));
+        }
+
+        // A backreference to group 1 only compiles if a capturing group (numbered, named
+        // or inside a branch reset) exists, which PCRE determines more reliably than parsing
+        if ($this->regexCompiles('(?:' . $regexPart . ')\g{1}')) {
+            throw new BadRouteException(sprintf(
+                'Regex "%s" for parameter "%s" contains a capturing group', $regexPart, $varName
+            ));
+        }
+    }
+
+    private function regexCompiles($regex) {
+        // The leading (?!) fails immediately, so the pattern is compiled but never executed
+        return false !== @preg_match('~(?!)' . $regex . '~', '');
     }
 }
