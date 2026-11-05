@@ -2,6 +2,7 @@
 
 namespace FastRoute\Dispatcher;
 
+use FastRoute\BadRouteException;
 use FastRoute\RouteCollector;
 
 abstract class DispatcherTest extends \PHPUnit_Framework_TestCase {
@@ -105,6 +106,117 @@ abstract class DispatcherTest extends \PHPUnit_Framework_TestCase {
             $r->addRoute('GET', '/user/{name}', 'handler0');
             $r->addRoute('GET', '/user/nikic', 'handler1');
         }, $this->generateDispatcherOptions());
+    }
+
+    /**
+     * @dataProvider provideUnsafePlaceholderRegexes
+     */
+    public function testUnsafePlaceholderRegexIsRejected($regex, $uri, $expectedMessage) {
+        try {
+            $dispatcher = \FastRoute\simpleDispatcher(function(RouteCollector $r) use ($regex) {
+                $r->addRoute('GET', '/user/{id}/{action}', 'profile');
+                $r->addRoute('GET', '/user/{id:' . $regex . '}', 'show');
+                $r->addRoute('GET', '/user/{id}/delete', 'delete');
+                $r->addRoute('GET', '/user/{id}/{action}/{extra}', 'admin');
+            }, $this->generateDispatcherOptions());
+        } catch (BadRouteException $e) {
+            $this->assertSame(sprintf($expectedMessage, $regex), $e->getMessage());
+            return;
+        }
+
+        $this->fail(sprintf(
+            'Placeholder regex "%s" was accepted; GET %s dispatched as %s',
+            $regex, $uri, json_encode(@$dispatcher->dispatch('GET', $uri))
+        ));
+    }
+
+    public function provideUnsafePlaceholderRegexes() {
+        $group = 'Regex "%s" for parameter "id" contains a capturing group';
+        $accept = 'Regex "%s" for parameter "id" contains (*ACCEPT)';
+        $invalid = 'Regex "%s" for parameter "id" is not a self-contained regular expression';
+        return [
+            ['(\d+)', '/user/10', $group],
+            ['(\d+)-(\d+)', '/user/10-20', $group],
+            ['(?<num>\d+)', '/user/10', $group],
+            ['(?P<num>\d+)', '/user/10', $group],
+            ["(?'num'\\d+)", '/user/10', $group],
+            ['(?:(\d+))', '/user/10', $group],
+            ['(?|(\d+)|(x))', '/user/10', $group],
+            ['(?=(\d))\d+', '/user/10', $group],
+            ['\Q[\E(\d+)]?', '/user/10', $group],
+            ['\d+(*ACCEPT)', '/user/10', $accept],
+            ['\d+(*ACCEPT:x)', '/user/10', $accept],
+            ['\d+)|(?:zz', 'zz', $invalid],
+            ['\d+\Q', '/user/10', $invalid],
+            ['(?x)\d+#', '/user/10', $invalid],
+        ];
+    }
+
+    public function testCapturingGroupInEarlierRouteDoesNotRunLaterHandler() {
+        try {
+            $dispatcher = \FastRoute\simpleDispatcher(function(RouteCollector $r) {
+                $r->addRoute('GET', '/user/{id:(\d+)}', 'show');
+                $r->addRoute('GET', '/user/{id}/delete', 'delete');
+            }, $this->generateDispatcherOptions());
+        } catch (BadRouteException $e) {
+            return;
+        }
+
+        $routeInfo = @$dispatcher->dispatch('GET', '/user/10');
+        $this->assertSame([$dispatcher::FOUND, 'show', ['id' => '10']], array_slice($routeInfo, 0, 3));
+    }
+
+    public function testAcceptVerbInLaterRouteDoesNotRunEarlierHandler() {
+        try {
+            $dispatcher = \FastRoute\simpleDispatcher(function(RouteCollector $r) {
+                $r->addRoute('GET', '/admin/{x}', 'admin');
+                $r->addRoute('GET', '/user/{id:\d+(*ACCEPT)}', 'show');
+            }, $this->generateDispatcherOptions());
+        } catch (BadRouteException $e) {
+            return;
+        }
+
+        $routeInfo = @$dispatcher->dispatch('GET', '/user/10');
+        $this->assertSame([$dispatcher::FOUND, 'show', ['id' => '10']], array_slice($routeInfo, 0, 3));
+    }
+
+    public function testPlaceholderMatchingEmptyStringDoesNotRunLaterHandler() {
+        $dispatcher = \FastRoute\simpleDispatcher(function(RouteCollector $r) {
+            $r->addRoute('GET', '/user/{id:\d*}', 'show');
+            $r->addRoute('GET', '/admin/{action}', 'admin');
+        }, $this->generateDispatcherOptions());
+
+        $routeInfo = @$dispatcher->dispatch('GET', '/user/');
+        $this->assertSame([$dispatcher::FOUND, 'show', ['id' => '']], array_slice($routeInfo, 0, 3));
+    }
+
+    /**
+     * @dataProvider provideSafePlaceholderRegexes
+     */
+    public function testPlaceholderRegexWithoutCapturingGroupsDispatches($regex, $uri, $id) {
+        $dispatcher = \FastRoute\simpleDispatcher(function(RouteCollector $r) use ($regex) {
+            $r->addRoute('GET', '/user/{id:' . $regex . '}', 'show');
+            $r->addRoute('GET', '/user/{id}/delete', 'delete');
+        }, $this->generateDispatcherOptions());
+
+        $routeInfo = $dispatcher->dispatch('GET', $uri);
+        $this->assertSame([$dispatcher::FOUND, 'show', ['id' => $id]], array_slice($routeInfo, 0, 3));
+
+        $routeInfo = $dispatcher->dispatch('GET', '/user/10/delete');
+        $this->assertSame([$dispatcher::FOUND, 'delete', ['id' => '10']], array_slice($routeInfo, 0, 3));
+    }
+
+    public function provideSafePlaceholderRegexes() {
+        return [
+            ['(?:\d+)', '/user/10', '10'],
+            ['(?>\d+)', '/user/10', '10'],
+            ['(?i:ab)c', '/user/ABc', 'ABc'],
+            ['(?=\d)\w+', '/user/1a', '1a'],
+            ['\(\d+\)', '/user/(10)', '(10)'],
+            ['[()0-9]+', '/user/(10)', '(10)'],
+            ['\Q(\E\d+', '/user/(10', '(10'],
+            ['\d+(?#comment)', '/user/10', '10'],
+        ];
     }
 
     public function provideFoundDispatchCases() {
